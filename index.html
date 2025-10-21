@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wild Species Locator Map</title>
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                }
+            }
+        }
+    </script>
+
+    <!-- Load Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha206-p4NxAoJBh96tKxS05uH3ZzW8x86/2a0ZkMvG2f5M7N4JjK8hJm+zW8S8hJzH3zN4/w=="
+        crossorigin=""/>
+    
+    <style>
+        /* Set the map container height */
+        #map {
+            height: 80vh; 
+            width: 100%;
+            border-radius: 0.75rem; /* rounded-xl */
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05); /* shadow-xl */
+        }
+        /* Style for the popup content */
+        .leaflet-popup-content-wrapper {
+            border-radius: 0.75rem !important;
+            padding: 0 !important;
+        }
+        .species-popup {
+            padding: 0.5rem;
+            max-width: 250px;
+        }
+        .species-popup img {
+            width: 100%;
+            height: auto;
+            max-height: 150px;
+            object-fit: cover;
+            border-radius: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        .species-popup h3 {
+            font-weight: 600;
+            font-size: 1.125rem;
+            margin-bottom: 0.25rem;
+            color: #1f2937;
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen p-4 sm:p-8 font-sans">
+
+    <div class="max-w-7xl mx-auto">
+        <header class="mb-6 text-center">
+            <h1 class="text-4xl font-extrabold text-gray-900 mb-2">Species Sightings Map</h1>
+            <p class="text-gray-600">Visualizing animal locations fetched from a Google Sheets CSV.</p>
+        </header>
+
+        <!-- Loading/Error Message -->
+        <div id="status-message" class="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-4 rounded-lg hidden" role="alert">
+            <p class="font-bold">Loading Data...</p>
+            <p>Fetching and mapping species locations.</p>
+        </div>
+
+        <!-- The Map Container -->
+        <div id="map"></div>
+    </div>
+
+    <!-- Load Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha206-oBft3yR0T5Q8t+zD9/d9L5Q5P+K5zJ+G5K/zU4J3zU5J9zD9Jz"
+        crossorigin=""></script>
+    
+    <script>
+        const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vSAI3iRgPCDrYWFgOV_8rbswRvu2W4pYg29OS4jIRvpDxX0kA2sLyPSVTC83whLf3JfArhKIr87jEK6/pub?gid=0&single=true&output=csv';
+        const statusMessage = document.getElementById('status-message');
+
+        let map = null;
+
+        // Function to show a status message
+        function showStatus(message, isError = false) {
+            statusMessage.classList.remove('hidden', 'bg-blue-100', 'bg-red-100', 'border-blue-500', 'border-red-500', 'text-blue-700', 'text-red-700');
+            statusMessage.classList.add(isError ? 'bg-red-100' : 'bg-blue-100');
+            statusMessage.querySelector('.font-bold').textContent = isError ? 'Error Loading Data' : 'Loading Data...';
+            statusMessage.querySelector('p:last-child').textContent = message;
+        }
+
+        // Initialize the Leaflet map
+        function initializeMap() {
+            if (map) map.remove(); // Clean up previous map instance if it exists
+            
+            // Initializing map centered near North America (approx center for general data)
+            map = L.map('map').setView([40, -100], 4); 
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            }).addTo(map);
+
+            showStatus('Map initialized. Fetching species data...');
+            fetchSpeciesData();
+        }
+
+        /**
+         * Robust CSV parsing function that assumes the third column (index 2) contains 
+         * both the Species Name and the Image URL, separated by a pipe character '|'.
+         * Format expected in the CSV cell: "Species Name | http://your-image-url.jpg"
+         */
+        function parseCSV(text) {
+            const lines = text.trim().split('\n');
+            if (lines.length <= 1) return [];
+            
+            const data = [];
+
+            for (let i = 1; i < lines.length; i++) {
+                const row = lines[i];
+                // Use a basic comma split, relying on the pipe separator to manage the third column's content
+                const values = row.split(',').map(v => v.trim().replace(/^"|"$/g, ''));
+                
+                // We only need the first 3 columns for lat, lng, and combined species/image data
+                if (values.length >= 3) {
+                    const record = {};
+                    
+                    // 1. Latitude and Longitude
+                    record.latitude = parseFloat(values[0]);
+                    record.longitude = parseFloat(values[1]);
+                    
+                    // 2. The third column (index 2) contains the combined Species and Image URL
+                    const combined = values[2];
+                    
+                    // Split by the pipe character '|' to separate the name and the URL
+                    if (combined.includes('|')) {
+                        const parts = combined.split('|');
+                        record.species = parts[0].trim();
+                        record.image = parts[1].trim();
+                    } else {
+                        // Fallback if no pipe is found (e.g., if data format is incorrect)
+                        record.species = combined;
+                        record.image = ''; 
+                        console.warn("Missing '|' separator in species field:", combined);
+                    }
+
+                    // Basic validation
+                    if (!isNaN(record.latitude) && !isNaN(record.longitude) && record.species) {
+                         data.push(record);
+                    } else {
+                        console.warn("Skipping invalid record (Non-numeric Lat/Lng or missing species):", row);
+                    }
+                } else {
+                    console.warn("Skipping record (Less than 3 columns):", row);
+                }
+            }
+            return data;
+        }
+
+        // Fetch the CSV data
+        async function fetchSpeciesData() {
+            try {
+                const response = await fetch(CSV_URL);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                const csvText = await response.text();
+                const speciesData = parseCSV(csvText);
+                
+                if (speciesData.length === 0) {
+                    showStatus('Data fetched successfully, but no valid species records were found.', true);
+                    return;
+                }
+
+                showStatus(`Found ${speciesData.length} species records. Mapping them now...`);
+                addMarkersToMap(speciesData);
+                statusMessage.classList.add('hidden'); // Hide status on success
+
+            } catch (error) {
+                console.error('Failed to fetch or process CSV:', error);
+                showStatus(`Could not load data from the CSV URL. Check the console for details.`, true);
+            }
+        }
+
+        // Add markers and popups to the map
+        function addMarkersToMap(speciesData) {
+            const markers = [];
+            
+            speciesData.forEach(item => {
+                const lat = item.latitude;
+                const lng = item.longitude;
+                const speciesName = item.species;
+                const imageUrl = item.image;
+
+                // Log the URL for final debugging
+                console.log(`Marker for ${speciesName}: Image URL=${imageUrl}`);
+
+                // Create the rich HTML popup content
+                const popupContent = `
+                    <div class="species-popup">
+                        <!-- Image with fallback using onerror -->
+                        <img src="${imageUrl}" 
+                             alt="${speciesName}" 
+                             onerror="this.onerror=null; this.src='https://placehold.co/300x150/e0e0e0/555555?text=Image+Not+Found';" 
+                             title="${speciesName} sighting image"
+                        >
+                        <h3>${speciesName}</h3>
+                        <p class="text-sm text-gray-500">Lat: ${lat.toFixed(2)}, Lon: ${lng.toFixed(2)}</p>
+                    </div>
+                `;
+
+                const marker = L.marker([lat, lng])
+                    .bindPopup(popupContent, {
+                        maxWidth: 300 // Set max width for better mobile experience
+                    })
+                    .addTo(map);
+
+                markers.push(marker);
+            });
+
+            // Fit the map view to the bounds of all markers
+            if (markers.length > 0) {
+                const group = new L.featureGroup(markers);
+                map.fitBounds(group.getBounds());
+            }
+        }
+
+        // Start the application when the window loads
+        window.onload = initializeMap;
+
+    </script>
+</body>
+</html>
